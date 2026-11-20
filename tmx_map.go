@@ -105,11 +105,12 @@ type Map struct {
 	// The compression level to use for tile layer data (defaults to -1, meaning algorithm-specific default level). (since 1.3)
 	CompressionLevel int `xml:"compressionlevel,attr"`
 	// Whether this map is infinite. An infinite map has no fixed size and grows in all directions;
-	// its layer data would be stored in <chunk> elements.
+	// its layer data is stored in <chunk> elements.
 	//
-	// TODO: <chunk> elements are not parsed by this package yet. Loading an
-	// infinite map's tile layer data is likely to fail or produce incorrect
-	// results; only this flag itself is currently exposed.
+	// When true, each tile layer's data is decoded into Layer.Chunks instead
+	// of Layer.Tiles, and tiles are queried by global grid coordinate with
+	// Layer.TileAt/TileRegion. Width and Height are usually 0 for such maps and
+	// must not be used to size them.
 	Infinite bool `xml:"infinite,attr"`
 	// X coordinate of the parallax origin in pixels. (since 1.8, defaults to 0)
 	ParallaxOriginX float64 `xml:"parallaxoriginx,attr"`

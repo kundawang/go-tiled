@@ -3,7 +3,18 @@
 [![PkgGoDev](https://pkg.go.dev/badge/github.com/lafriks/go-tiled)](https://pkg.go.dev/github.com/lafriks/go-tiled)
 [![Build Status](https://cloud.drone.io/api/badges/lafriks/go-tiled/status.svg?ref=refs/heads/master)](https://cloud.drone.io/lafriks/go-tiled)
 
-Go library to parse Tiled map editor file format (TMX) and render map to image. Currently supports only orthogonal finite maps rendering out-of-the-box.
+Go library to parse Tiled map editor file format (TMX) and render map to image. Currently supports rendering of orthogonal finite maps out-of-the-box; infinite maps are parsed but cannot be rendered as a single image.
+
+## Infinite Maps
+
+Infinite maps store their tile layers as rectangular `<chunk>`s at arbitrary (possibly negative) global grid coordinates. Layers of such maps have an empty `Tiles` slice; their data is exposed as `Layer.Chunks`, and tiles are queried by global coordinate:
+
+```go
+tile := layer.TileAt(-3, 12)              // NilLayerTile outside all chunks
+tiles := layer.TileRegion(-16, -16, 32, 32) // row-major, 32 entries per row
+```
+
+`TileAt` and `TileRegion` also work on finite maps (where they index the same data as `Tiles`), so callers can use them uniformly. Chunks must not partially overlap; identical duplicate chunks are accepted with the last one winning.
 
 ## Installing
 

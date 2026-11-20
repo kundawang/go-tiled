@@ -44,6 +44,10 @@ var (
 	ErrUnsupportedOrientation = errors.New("tiled/render: unsupported orientation")
 	// ErrUnsupportedRenderOrder represents an error in the unsupported order for rendering.
 	ErrUnsupportedRenderOrder = errors.New("tiled/render: unsupported render order")
+	// ErrInfiniteMap represents an attempt to render an infinite map. Those
+	// maps have no fixed size and are loaded into per-layer chunks; there is
+	// no full-map image to render without first choosing the region to draw.
+	ErrInfiniteMap = errors.New("tiled/render: infinite maps are not renderable")
 
 	// ErrOutOfBounds represents an error that the index is out of bounds
 	ErrOutOfBounds = errors.New("tiled/render: index out of bounds")
@@ -89,6 +93,10 @@ func NewRenderer(m *tiled.Map) (*Renderer, error) {
 
 // NewRendererWithFileSystem creates new rendering engine instance with a custom file system.
 func NewRendererWithFileSystem(m *tiled.Map, fs fs.FS) (*Renderer, error) {
+	if m.Infinite {
+		return nil, ErrInfiniteMap
+	}
+
 	r := &Renderer{m: m, tileCache: make(map[uint32]image.Image), fs: fs}
 	switch r.m.Orientation {
 	case "orthogonal":
@@ -167,6 +175,11 @@ func (r *Renderer) getTileImage(tile *tiled.LayerTile) (image.Image, error) {
 }
 
 func (r *Renderer) _renderLayer(layer *tiled.Layer) error {
+	// Infinite maps are rejected up front by NewRendererWithFileSystem; this
+	// guard keeps an eventually-supported viewport implementation honest.
+	if r.m.Infinite {
+		return ErrInfiniteMap
+	}
 	// TODO: layer.ParallaxX/Y and Map.ParallaxOriginX/Y aren't applied here --
 	// every layer is drawn at the same 1:1 position regardless of its parallax
 	// factor. This renderer only produces a single static, full-map image with

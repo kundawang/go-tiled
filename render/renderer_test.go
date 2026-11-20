@@ -23,6 +23,7 @@ SOFTWARE.
 package render
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -57,6 +58,26 @@ func TestRenderer_RenderOrthogonalMap(t *testing.T) {
 
 	if err = renderer.SaveAsPng(w); err != nil {
 		t.Error(err)
+	}
+}
+
+// TestRenderer_InfiniteMapRejected documents that infinite maps cannot be
+// rendered as a single image: they have no fixed size or origin. They can
+// still be loaded and queried tile by tile.
+func TestRenderer_InfiniteMapRejected(t *testing.T) {
+	tiledMap, err := tiled.LoadFile("../assets/infinite.tmx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tiledMap.Infinite {
+		t.Fatal("fixture expected to be an infinite map")
+	}
+
+	if _, err = NewRenderer(tiledMap); !errors.Is(err, ErrInfiniteMap) {
+		t.Fatalf("NewRenderer error = %v, want ErrInfiniteMap", err)
+	}
+	if _, err = NewRendererWithFileSystem(tiledMap, nil); !errors.Is(err, ErrInfiniteMap) {
+		t.Fatalf("NewRendererWithFileSystem error = %v, want ErrInfiniteMap", err)
 	}
 }
 

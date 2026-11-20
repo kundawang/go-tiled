@@ -29,13 +29,28 @@ import (
 	"encoding/base64"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"strconv"
 )
 
-// ErrUnknownCompression error is returned when file contains invalid compression method
-var ErrUnknownCompression = errors.New("tiled: invalid compression method")
+var (
+	// ErrUnknownCompression error is returned when file contains invalid compression method
+	ErrUnknownCompression = errors.New("tiled: invalid compression method")
+	// ErrLayerDataTooLarge is returned when decoded layer data (including the
+	// output of decompression) would exceed MaxDecodedLayerDataSize.
+	ErrLayerDataTooLarge = errors.New("tiled: decoded layer data exceeds maximum size")
+)
+
+// MaxDecodedLayerDataSize limits, in bytes, how much tile data a single layer
+// or chunk may decode to. GIDs are 4 bytes each, so this also bounds the
+// number of cells accepted in one chunk. It exists to keep a malformed or
+// maliciously compressed map from exhausting memory; it is a variable so
+// applications with unusually large maps can raise it.
+//
+// It is not safe to change this while maps are being loaded concurrently.
+var MaxDecodedLayerDataSize = 64 << 20 // 64 MiB
 
 // Data is raw data
 type Data struct {
@@ -47,6 +62,10 @@ type Data struct {
 	RawData []byte `xml:",innerxml"`
 	// Parsed tile elements. Only populated when Encoding is not set.
 	DataTiles []DataTile `xml:"tile"`
+	// Chunks holds the tile data of an infinite map's layer, in document
+	// order. The chunk's Encoding and Compression are those of the enclosing
+	// <data> element. For finite maps this is empty.
+	Chunks []*Chunk `xml:"chunk"`
 }
 
 // DataTile defines the value of a single tile on a tile layer
@@ -82,7 +101,8 @@ func (d *Data) UnmarshalXML(dec *xml.Decoder, start xml.StartElement) error {
 	return d.decodeTileElements(dec)
 }
 
-// decodeCharData collects the element's text content into RawData.
+// decodeCharData collects the element's text content into RawData or, when
+// the element contains <chunk> children (infinite maps), into the chunks.
 func (d *Data) decodeCharData(dec *xml.Decoder) error {
 	var buf bytes.Buffer
 	for {
@@ -93,6 +113,20 @@ func (d *Data) decodeCharData(dec *xml.Decoder) error {
 		switch t := tok.(type) {
 		case xml.CharData:
 			buf.Write(t)
+		case xml.StartElement:
+			// The <data> element itself only holds chunks for infinite maps;
+			// anything else inside it is ignored.
+			if t.Name.Local != "chunk" {
+				if err := dec.Skip(); err != nil {
+					return err
+				}
+				continue
+			}
+			ch, err := d.decodeChunkElement(dec, t)
+			if err != nil {
+				return err
+			}
+			d.Chunks = append(d.Chunks, ch)
 		case xml.EndElement:
 			d.RawData = buf.Bytes()
 			return nil
@@ -100,8 +134,73 @@ func (d *Data) decodeCharData(dec *xml.Decoder) error {
 	}
 }
 
+// decodeChunkElement reads a single <chunk> element. Encoding and compression
+// are inherited from the enclosing <data> element. Text content is collected
+// into the chunk's rawData; for the XML encoding, <tile> children are
+// collected into its dataTiles.
+func (d *Data) decodeChunkElement(dec *xml.Decoder, start xml.StartElement) (*Chunk, error) {
+	ch := &Chunk{Encoding: d.Encoding, Compression: d.Compression}
+
+	for _, attr := range start.Attr {
+		var err error
+		switch attr.Name.Local {
+		case "x":
+			err = parseIntAttr(attr.Value, &ch.X)
+		case "y":
+			err = parseIntAttr(attr.Value, &ch.Y)
+		case "width":
+			err = parseIntAttr(attr.Value, &ch.Width)
+		case "height":
+			err = parseIntAttr(attr.Value, &ch.Height)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("tiled: chunk at (%d,%d): invalid attribute %s: %w",
+				ch.X, ch.Y, attr.Name.Local, err)
+		}
+	}
+
+	var buf bytes.Buffer
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch t := tok.(type) {
+		case xml.CharData:
+			buf.Write(t)
+		case xml.StartElement:
+			if t.Name.Local == "tile" {
+				var dt DataTile
+				if err := parseTileElement(dec, t, &dt); err != nil {
+					return nil, err
+				}
+				ch.dataTiles = append(ch.dataTiles, dt)
+				continue
+			}
+			// Chunks never nest, but skip unknown children defensively.
+			if err := dec.Skip(); err != nil {
+				return nil, err
+			}
+		case xml.EndElement:
+			ch.rawData = buf.Bytes()
+			return ch, nil
+		}
+	}
+}
+
+// parseIntAttr parses a decimal integer attribute.
+func parseIntAttr(s string, dst *int) error {
+	v, err := strconv.Atoi(s)
+	if err != nil {
+		return err
+	}
+	*dst = v
+	return nil
+}
+
 // decodeTileElements parses the <tile gid="N"/> children directly,
-// bypassing reflection-based attribute decoding.
+// bypassing reflection-based attribute decoding. For infinite maps it also
+// accepts <chunk> elements, whose tile children are kept per chunk.
 func (d *Data) decodeTileElements(dec *xml.Decoder) error {
 	for {
 		tok, err := dec.Token()
@@ -110,28 +209,23 @@ func (d *Data) decodeTileElements(dec *xml.Decoder) error {
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
-			if t.Name.Local != "tile" {
-				if err := dec.Skip(); err != nil {
+			switch t.Name.Local {
+			case "tile":
+				var dt DataTile
+				if err := parseTileElement(dec, t, &dt); err != nil {
 					return err
 				}
-				continue
-			}
-
-			var dt DataTile
-			for _, attr := range t.Attr {
-				if attr.Name.Local != "gid" {
-					continue
-				}
-				v, err := strconv.ParseUint(attr.Value, 10, 32)
+				d.DataTiles = append(d.DataTiles, dt)
+			case "chunk":
+				ch, err := d.decodeChunkElement(dec, t)
 				if err != nil {
 					return err
 				}
-				dt.GID = uint32(v)
-			}
-			d.DataTiles = append(d.DataTiles, dt)
-
-			if err := dec.Skip(); err != nil {
-				return err
+				d.Chunks = append(d.Chunks, ch)
+			default:
+				if err := dec.Skip(); err != nil {
+					return err
+				}
 			}
 		case xml.EndElement:
 			return nil
@@ -139,15 +233,37 @@ func (d *Data) decodeTileElements(dec *xml.Decoder) error {
 	}
 }
 
+// parseTileElement reads the gid attribute of a <tile> element and consumes
+// the element.
+func parseTileElement(dec *xml.Decoder, start xml.StartElement, dt *DataTile) error {
+	for _, attr := range start.Attr {
+		if attr.Name.Local != "gid" {
+			continue
+		}
+		v, err := strconv.ParseUint(attr.Value, 10, 32)
+		if err != nil {
+			return err
+		}
+		dt.GID = uint32(v)
+	}
+	return dec.Skip()
+}
+
 // decodeBase64 decodes (and, if applicable, decompresses) the raw data.
 func (d *Data) decodeBase64(sizeHint int) (data []byte, err error) {
-	rawData := bytes.TrimSpace(d.RawData)
+	return decodeBase64Data(d.RawData, d.Compression, sizeHint)
+}
+
+// decodeBase64Data decodes and, if compression is set, decompresses rawData.
+// Decompression output is capped at MaxDecodedLayerDataSize bytes.
+func decodeBase64Data(rawData []byte, compression string, sizeHint int) (data []byte, err error) {
+	rawData = bytes.TrimSpace(rawData)
 	r := bytes.NewReader(rawData)
 
 	encr := base64.NewDecoder(base64.StdEncoding, r)
 
 	var comr io.Reader
-	switch d.Compression {
+	switch compression {
 	case "gzip":
 		comr, err = gzip.NewReader(encr)
 		if err != nil {
@@ -165,16 +281,36 @@ func (d *Data) decodeBase64(sizeHint int) (data []byte, err error) {
 		return
 	}
 
-	buf := bytes.NewBuffer(make([]byte, 0, sizeHint))
-	if _, err = buf.ReadFrom(comr); err != nil {
+	limit := MaxDecodedLayerDataSize
+	if limit < 0 {
+		limit = 0
+	}
+	// Never pre-size the buffer beyond the limit, even if the caller's hint
+	// (derived from untrusted width/height attributes) is larger.
+	capacity := sizeHint
+	if capacity < 0 || capacity > limit {
+		capacity = limit
+	}
+
+	// Read one byte past the limit so exceeding it can be distinguished from
+	// legitimate data of exactly the maximum size.
+	buf := bytes.NewBuffer(make([]byte, 0, capacity))
+	n, err := buf.ReadFrom(io.LimitReader(comr, int64(limit)+1))
+	if err != nil {
 		return nil, err
+	}
+	if n > int64(limit) {
+		return nil, ErrLayerDataTooLarge
 	}
 	return buf.Bytes(), nil
 }
 
 func (d *Data) decodeCSV() ([]uint32, error) {
-	raw := d.RawData
+	return decodeCSVData(d.RawData)
+}
 
+// decodeCSVData parses comma-separated GIDs from raw.
+func decodeCSVData(raw []byte) ([]uint32, error) {
 	// Estimate the tile count from the raw byte length
 	gids := make([]uint32, 0, len(raw)/2+1)
 

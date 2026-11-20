@@ -57,3 +57,22 @@ func ExampleWangSet_GetWangColors() {
 	//   BottomLeft:  Water
 	//   TopLeft:     Rock
 }
+
+func ExampleLayer_TileAt() {
+	tiledMap, err := tiled.LoadFile("assets/infinite.tmx")
+	if err != nil {
+		panic(err)
+	}
+
+	layer := tiledMap.Layers[0]
+	fmt.Println(layer.IsEmpty(), len(layer.Chunks))
+	fmt.Println(layer.TileAt(0, 0).IsNil(), layer.TileAt(3, 2).ID)
+	fmt.Println(layer.TileAt(100, 100).IsNil())
+	fmt.Println(len(layer.TileRegion(-1, -1, 3, 3)))
+
+	// Output:
+	// false 3
+	// false 11
+	// true
+	// 9
+}

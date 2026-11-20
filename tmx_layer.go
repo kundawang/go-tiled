@@ -25,6 +25,7 @@ package tiled
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"image"
 )
 
@@ -99,11 +100,27 @@ type Layer struct {
 	// Custom properties
 	Properties Properties `xml:"properties>property"`
 	// This is the attribute you'd like to use, not Data. Tile entry at (x,y) is obtained using l.DecodedTiles[y*map.Width+x].
+	//
+	// For infinite maps this is nil: their tile data lives in Chunks and must
+	// be queried with TileAt or TileRegion.
 	Tiles []*LayerTile
+	// Chunks holds the decoded tile data of an infinite map's layer, sorted by
+	// Y and then X. It is nil for finite maps, whose data is in Tiles.
+	//
+	// Chunk coordinates are global and may be negative. Chunks of one layer
+	// must not partially overlap; exactly identical chunks are accepted and the
+	// last one in document order is kept. Use TileAt or TileRegion for
+	// point/region queries.
+	Chunks []*Chunk
 	// Data
 	data *Data
 	// Set when all entries of the layer are NilTile
 	empty bool
+	// Set when the layer's data was stored in chunks (infinite map).
+	chunked bool
+	// chunkMaxBottom[i] is the largest bottom edge (Y+Height) among
+	// Chunks[0..i]; used to find the first candidate chunk for a query.
+	chunkMaxBottom []int64
 }
 
 // IsEmpty checks if layer has tiles other than nil
@@ -222,22 +239,29 @@ func (l *Layer) DecodeLayer(m *Map) error {
 		return ErrEmptyLayerData
 	}
 
-	if err := l.decodeTiles(); err != nil {
-		return err
+	if m.Infinite {
+		// Chunked data is never read through the fixed-width decoders above.
+		if err := l.decodeChunks(); err != nil {
+			return err
+		}
+	} else {
+		if len(l.data.Chunks) != 0 {
+			return fmt.Errorf("tiled: layer %q has <chunk> data but the map is not infinite", l.Name)
+		}
+		if err := l.decodeTiles(); err != nil {
+			return err
+		}
+		l.empty = true
+		for _, tile := range l.Tiles {
+			if !tile.Nil {
+				l.empty = false
+				break
+			}
+		}
 	}
 
 	// Data is not needed anymore
 	l.data = nil
-
-	for i := 0; i < len(l.Tiles); i++ {
-		tile := l.Tiles[i]
-		if !tile.Nil {
-			l.empty = false
-			return nil
-		}
-	}
-
-	l.empty = true
 
 	return nil
 }
@@ -257,8 +281,24 @@ func (l *Layer) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	return nil
 }
 
+// tileIndex returns the tile at row-major index i of Tiles, or NilLayerTile
+// if i is out of range or the entry is nil.
+func (l *Layer) tileIndex(i int) *LayerTile {
+	if i < 0 || i >= len(l.Tiles) || l.Tiles[i] == nil {
+		return NilLayerTile
+	}
+	return l.Tiles[i]
+}
+
 // GetTilePosition returns the x,y position of the tileID on the current layer.
+//
+// It is defined only for fixed-size layers: an infinite map has no row width
+// (its layers store data in chunks), so (0, 0) is returned for those and for
+// layers not yet decoded.
 func (l *Layer) GetTilePosition(tileID int) (int, int) {
+	if l._map == nil || l.chunked || l._map.Width <= 0 {
+		return 0, 0
+	}
 	x := tileID % l._map.Width
 	y := tileID / l._map.Width
 	return int(l.OffsetX) + x*l._map.TileWidth, int(l.OffsetY) + y*l._map.TileHeight
