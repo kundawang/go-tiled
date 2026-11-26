@@ -94,25 +94,31 @@ func (r *Renderer) open(f string) (io.ReadCloser, error) {
 }
 
 func (r *Renderer) getTileImage(tile *tiled.LayerTile) (image.Image, error) {
-	timg, ok := r.tileCache[tile.Tileset.FirstGID+tile.ID]
+	cacheKey := tile.Tileset.FirstGID + tile.ID
+	timg, ok := r.tileCache[cacheKey]
 	if ok {
 		return r.engine.RotateTileImage(tile, timg), nil
 	}
 	// Precache all tiles in tileset
 	if tile.Tileset.Image == nil {
 		for i := 0; i < len(tile.Tileset.Tiles); i++ {
-			if tile.Tileset.Tiles[i].ID == tile.ID {
-				sf, err := r.open(tile.Tileset.GetFileFullPath(tile.Tileset.Tiles[i].Image.Source))
-				if err != nil {
-					return nil, err
-				}
-				defer sf.Close()
-				timg, _, err = image.Decode(sf)
-				if err != nil {
-					return nil, err
-				}
-				r.tileCache[tile.Tileset.FirstGID+tile.ID] = timg
+			tilesetTile := tile.Tileset.Tiles[i]
+			if tilesetTile.ID != tile.ID || tilesetTile.Image == nil {
+				continue
 			}
+			sf, err := r.open(tile.Tileset.GetFileFullPath(tilesetTile.Image.Source))
+			if err != nil {
+				return nil, err
+			}
+			defer sf.Close()
+			timg, _, err = image.Decode(sf)
+			if err != nil {
+				return nil, err
+			}
+			// Image-collection tilesets carry the color key on each
+			// individual tile image.
+			timg = applyTransparency(timg, tilesetTile.Image.Trans)
+			r.tileCache[cacheKey] = timg
 		}
 	} else {
 		sf, err := r.open(tile.Tileset.GetFileFullPath(tile.Tileset.Image.Source))
@@ -126,6 +132,10 @@ func (r *Renderer) getTileImage(tile *tiled.LayerTile) (image.Image, error) {
 			return nil, err
 		}
 
+		// Apply the tileset-wide color key to the whole atlas before
+		// cutting individual tiles so every crop inherits transparency.
+		img = applyTransparency(img, tile.Tileset.Image.Trans)
+
 		for i := uint32(0); i < uint32(tile.Tileset.TileCount); i++ {
 			rect := tile.Tileset.GetTileRect(i)
 			r.tileCache[i+tile.Tileset.FirstGID] = imaging.Crop(img, rect)
@@ -136,6 +146,59 @@ func (r *Renderer) getTileImage(tile *tiled.LayerTile) (image.Image, error) {
 	}
 
 	return r.engine.RotateTileImage(tile, timg), nil
+}
+
+// applyTransparency applies the Tiled "trans" color key of an image: every
+// pixel whose RGB channels equal the declared key color is made fully
+// transparent (alpha set to 0). Matching ignores both the pixel alpha and the
+// alpha component of the declaration, since Tiled's trans attribute is an
+// RGB color key. Every other pixel is copied unchanged, including its alpha.
+//
+// Images without a color key (trans is nil) are returned as-is. When a key is
+// applied the result is an *image.NRGBA: grayscale, CMYK and paletted source
+// images are converted through Go's color models first, so all decoded image
+// models behave identically.
+func applyTransparency(img image.Image, trans *tiled.HexColor) image.Image {
+	if img == nil || trans == nil {
+		return img
+	}
+
+	bounds := img.Bounds()
+	if bounds.Empty() {
+		return img
+	}
+
+	// HexColor.RGBA widens the stored 8-bit channels to 16-bit values, so
+	// the high byte is the exact declared channel value. The key alpha is
+	// intentionally ignored: the key matches RGB only.
+	tr, tg, tb, _ := trans.RGBA()
+	keyR := uint8(tr >> 8)
+	keyG := uint8(tg >> 8)
+	keyB := uint8(tb >> 8)
+
+	out := image.NewNRGBA(bounds)
+	// A Src copy converts every source color model (Gray, Paletted, YCbCr,
+	// CMYK, premultiplied RGBA, ...) to straight NRGBA without blending
+	// against a backdrop, preserving each pixel's effective alpha.
+	draw.Draw(out, bounds, img, bounds.Min, draw.Src)
+
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			i := out.PixOffset(x, y)
+			if out.Pix[i] == keyR && out.Pix[i+1] == keyG && out.Pix[i+2] == keyB {
+				out.Pix[i+3] = 0
+			}
+		}
+	}
+
+	return out
+}
+
+// ApplyTransparency is the exported form of applyTransparency. It returns img
+// with the given Tiled trans color key applied and is a no-op when trans is
+// nil.
+func ApplyTransparency(img image.Image, trans *tiled.HexColor) image.Image {
+	return applyTransparency(img, trans)
 }
 
 func (r *Renderer) _renderLayer(layer *tiled.Layer) error {
