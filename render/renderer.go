@@ -202,15 +202,28 @@ func (r *Renderer) RenderLayer(id int) error {
 	return r._renderLayer(r.m.Layers[id])
 }
 
-// RenderVisibleLayers renders all visible map layers.
+// RenderVisibleLayers renders all visible tile layers and top-level image
+// layers in their original TMX stacking order. Object and group layers are
+// not rendered here.
 func (r *Renderer) RenderVisibleLayers() error {
-	for i := range r.m.Layers {
-		if !r.m.Layers[i].Visible {
-			continue
-		}
-
-		if err := r.RenderLayer(i); err != nil {
-			return err
+	for _, ref := range r.m.OrderedLayers() {
+		switch ref.Kind {
+		case tiled.ImageLayerKind:
+			layer := r.m.ImageLayers[ref.Index]
+			if !layer.Visible {
+				continue
+			}
+			if err := r._renderImageLayer(layer); err != nil {
+				return err
+			}
+		default:
+			layer := r.m.Layers[ref.Index]
+			if !layer.Visible {
+				continue
+			}
+			if err := r._renderLayer(layer); err != nil {
+				return err
+			}
 		}
 	}
 

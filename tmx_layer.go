@@ -92,6 +92,9 @@ type Layer struct {
 	data *Data
 	// Set when all entries of the layer are NilTile
 	empty bool
+	// decodeOffset records the XML decoder position at which this layer was
+	// decoded, so separately-typed layer slices can be merged in TMX order.
+	decodeOffset int64
 }
 
 // IsEmpty checks if layer has tiles other than nil
@@ -232,6 +235,8 @@ func (l *Layer) DecodeLayer(m *Map) error {
 
 // UnmarshalXML decodes a single XML element beginning with the given start element.
 func (l *Layer) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	decodeOffset := d.InputOffset()
+
 	item := aliasLayer{}
 	item.SetDefaults()
 
@@ -241,6 +246,7 @@ func (l *Layer) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 
 	*l = (Layer)(item.internalLayer)
 	l.data = item.Data
+	l.decodeOffset = decodeOffset
 
 	return nil
 }

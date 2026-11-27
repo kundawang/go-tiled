@@ -60,10 +60,16 @@ type ImageLayer struct {
 	RepeatX bool `xml:"repeatx,attr"`
 	// The repeat y settings of the image.
 	RepeatY bool `xml:"repeaty,attr"`
+
+	// decodeOffset records the XML decoder position at which this layer was
+	// decoded, so separately-typed layer slices can be merged in TMX order.
+	decodeOffset int64
 }
 
 // UnmarshalXML decodes a single XML element beginning with the given start element.
 func (l *ImageLayer) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
+	decodeOffset := d.InputOffset()
+
 	item := aliasImageLayer{}
 	item.SetDefaults()
 
@@ -72,8 +78,27 @@ func (l *ImageLayer) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error 
 	}
 
 	*l = (ImageLayer)(item)
+	l.decodeOffset = decodeOffset
 
 	return nil
+}
+
+// EffectiveOpacity returns the layer opacity in the [0,1] range used for
+// rendering. TMX defaults the opacity to 1 and XML decoding applies that
+// default, so an opacity of zero on a decoded layer means an explicit
+// opacity="0". A programmatically constructed layer instead has the Go zero
+// value for "unset", which is treated as the TMX default of fully opaque.
+func (l *ImageLayer) EffectiveOpacity() float32 {
+	switch {
+	case l.Opacity < 0:
+		return 0
+	case l.Opacity > 1:
+		return 1
+	case l.Opacity == 0 && l.decodeOffset == 0:
+		return 1
+	default:
+		return l.Opacity
+	}
 }
 
 // Image source
