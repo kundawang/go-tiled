@@ -91,5 +91,13 @@ func (g *Group) DecodeGroup(m *Map) error {
 		}
 	}
 
+	// Decode object groups nested inside the group, so that tile objects
+	// initialize their tilesets and template references get loaded.
+	for _, og := range g.ObjectGroups {
+		if err := og.DecodeObjectGroup(m); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }

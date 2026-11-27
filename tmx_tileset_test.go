@@ -254,6 +254,13 @@ var testLoadTilesetTileFile = &TilesetTile{
 					Width:      32.375,
 					X:          -0.25,
 					Y:          17.75,
+					setFields: map[string]bool{
+						"id":     true,
+						"x":      true,
+						"y":      true,
+						"width":  true,
+						"height": true,
+					},
 				},
 			},
 			OffsetX:    0,

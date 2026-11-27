@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<map version="1.10" tiledversion="1.10.2" orientation="orthogonal" renderorder="right-down" width="10" height="10" tilewidth="32" tileheight="32" infinite="0" nextlayerid="2" nextobjectid="2">
+ <objectgroup id="1" name="Objects">
+  <object id="1" template="test_template_cycle_a.tx" x="0" y="0"/>
+ </objectgroup>
+</map>

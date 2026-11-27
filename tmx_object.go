@@ -25,6 +25,7 @@ package tiled
 import (
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -140,9 +141,55 @@ type Object struct {
 	TemplateSource string `xml:"template,attr"`
 	TemplateLoaded bool   `xml:"-"`
 	Template       *Template
+
+	// setFields records which XML attributes were explicitly present when the
+	// object was decoded. It allows distinguishing an omitted attribute from
+	// one explicitly set to a zero value (e.g. x="0" or visible="0"). It is
+	// nil for programmatically constructed objects.
+	setFields map[string]bool
+}
+
+// isSet reports whether the given object attribute was explicitly set. For
+// objects decoded from XML this is exact; for programmatically constructed
+// objects it falls back to a non-zero-value heuristic.
+func (o *Object) isSet(field string) bool {
+	if o.setFields != nil {
+		return o.setFields[field]
+	}
+	switch field {
+	case "name":
+		return o.Name != ""
+	case "type":
+		return o.Type != ""
+	case "class":
+		return o.Class != ""
+	case "x":
+		return o.X != 0
+	case "y":
+		return o.Y != 0
+	case "width":
+		return o.Width != 0
+	case "height":
+		return o.Height != 0
+	case "rotation":
+		return o.Rotation != 0
+	case "gid":
+		return o.GID != 0
+	case "visible":
+		return o.Visible
+	}
+	return false
 }
 
 func (o *Object) initTemplate(m *Map) error {
+	return o.initTemplateChain(m, nil)
+}
+
+// initTemplateChain loads the template referenced by the object and, recursively,
+// any templates referenced by the template objects themselves. The chain
+// argument holds the template files already being resolved up the call stack
+// and is used to detect circular template references.
+func (o *Object) initTemplateChain(m *Map, chain []string) error {
 	if o.TemplateLoaded {
 		return nil
 	}
@@ -151,19 +198,37 @@ func (o *Object) initTemplate(m *Map) error {
 		return nil
 	}
 	sourcePath := m.GetFileFullPath(o.TemplateSource)
+	for _, p := range chain {
+		if p == sourcePath {
+			return fmt.Errorf("%w: %s (referenced by object id %d)", ErrTemplateCycle, o.TemplateSource, o.ID)
+		}
+	}
 	f, err := m.loader.open(sourcePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("tiled: failed to load template %q for object id %d: %w", o.TemplateSource, o.ID, err)
 	}
 	defer f.Close()
 
 	d := xml.NewDecoder(f)
 	if err := d.Decode(&o.Template); err != nil {
-		return err
+		return fmt.Errorf("tiled: failed to parse template %q for object id %d: %w", o.TemplateSource, o.ID, err)
 	}
 	o.TemplateLoaded = true
 
-	if o.Template == nil || o.Template.Tileset == nil || o.Template.Object == nil {
+	if o.Template == nil {
+		return nil
+	}
+
+	if obj := o.Template.Object; obj != nil && len(obj.TemplateSource) > 0 {
+		// A nested template source is relative to the location of the
+		// template file that references it.
+		obj.TemplateSource = filepath.Join(filepath.Dir(o.TemplateSource), obj.TemplateSource)
+		if err := obj.initTemplateChain(m, append(chain, sourcePath)); err != nil {
+			return err
+		}
+	}
+
+	if o.Template.Tileset == nil || o.Template.Object == nil {
 		return nil
 	}
 	if src := o.Template.Tileset.Source; len(src) > 0 {
@@ -183,6 +248,13 @@ func (o *Object) UnmarshalXML(d *xml.Decoder, start xml.StartElement) error {
 	}
 
 	*o = (Object)(item)
+
+	if len(start.Attr) > 0 {
+		o.setFields = make(map[string]bool, len(start.Attr))
+		for _, attr := range start.Attr {
+			o.setFields[attr.Name.Local] = true
+		}
+	}
 
 	return nil
 }

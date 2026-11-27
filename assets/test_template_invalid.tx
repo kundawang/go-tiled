@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+ <object name="Broken">
+  <properties>
+   <property name="health" type="int" value="abc"/>
+  </properties>
+ </object>
+</template>
